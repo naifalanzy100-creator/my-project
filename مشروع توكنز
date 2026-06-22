@@ -1,0 +1,78 @@
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.security import APIKeyHeader
+from pydantic import BaseModel
+import tiktoken
+import requests
+
+# تهيئة خادم API
+app = FastAPI(title="HugeAI Token Optimizer API")
+
+# 🔒 تفعيل زر القفل في واجهة المتصفح
+api_key_scheme = APIKeyHeader(name="Authorization")
+
+# ==========================================
+# كلاس HugeAIOptimizer (بدون تغيير)
+# ==========================================
+class HugeAIOptimizer:
+    def __init__(self):
+        self.pricing = {"gpt-4o": 5.0, "gpt-3.5-turbo": 0.5}
+
+    def count_tokens(self, text: str, model: str) -> int:
+        try:
+            encoding = tiktoken.encoding_for_model(model)
+        except KeyError:
+            encoding = tiktoken.get_encoding("cl100k_base")
+        return len(encoding.encode(text))
+
+    def hugeai_compressor(self, text: str) -> str:
+        hugeai_api_url = "http://127.0.0.1:8000/optimize" 
+        payload = {"original_prompt": text}
+        try:
+            response = requests.post(hugeai_api_url, json=payload)
+            response.raise_for_status() 
+            return response.json()["optimized_prompt"]
+        except requests.exceptions.RequestException:
+            return text 
+
+    def process_prompt(self, prompt: str, model: str):
+        if model not in self.pricing:
+            raise ValueError("النموذج غير مدعوم")
+
+        t_original = self.count_tokens(prompt, model)
+        optimized_prompt = self.hugeai_compressor(prompt)
+        t_optimized = self.count_tokens(optimized_prompt, model)
+
+        saved_tokens = t_original - t_optimized
+        percentage_saved = (saved_tokens / t_original) * 100 if t_original > 0 else 0
+        money_saved = saved_tokens * (self.pricing[model] / 1_000_000)
+
+        return {
+            "original_tokens": t_original,
+            "optimized_tokens": t_optimized,
+            "saved_tokens": saved_tokens,
+            "percentage_saved": round(percentage_saved, 2),
+            "money_saved_usd": money_saved
+        }
+
+system = HugeAIOptimizer()
+
+class PromptRequest(BaseModel):
+    prompt: str
+    model: str = "gpt-4o"
+
+# ==========================================
+# استقبال الطلبات مع الحماية المتقدمة
+# ==========================================
+
+@app.post("/calculate-savings")
+def calculate_savings(request_data: PromptRequest, api_key: str = Depends(api_key_scheme)):
+    """
+    هذا هو المسار (Endpoint) الذي سيستقبل الطلبات.
+    """
+    # 🚨 التحقق من المفتاح الذي استلمناه من القفل
+    if api_key != "HugeAI_Secret_Key":
+        raise HTTPException(status_code=401, detail="غير مسموح بالدخول: مفتاح التحقق غير صحيح")
+    
+    # ✅ إذا كان المفتاح صحيحاً، نحسب التكلفة
+    result = system.process_prompt(request_data.prompt, request_data.model)
+    return result
